@@ -1,0 +1,64 @@
+name: compiler_warnings
+
+# Builds the tree on Fedora with a recent gcc and reports the compiler warnings
+# per category. The mock job already builds on Fedora, but mock keeps the
+# compiler output inside its own build.log in the artifact, so the warnings
+# never reach the job log. See #4136.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: ['devel', 'cvmfs*']
+    paths: ['**.c', '**.cpp', '**.h', '**.cc', '**CMakeLists.txt', '**.cmake']
+
+jobs:
+  warnings:
+    name: "Compiler warnings (Fedora ${{ matrix.fedora }})"
+    runs-on: ubuntu-latest
+    container: fedora:${{ matrix.fedora }}
+    strategy:
+      fail-fast: false
+      matrix:
+        fedora: ['43', '44']
+
+    steps:
+      - name: Install checkout prerequisites
+        run: dnf -y install git ninja-build which
+
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: ./ci/build_install_builddeps.sh
+
+      - name: Record toolchain
+        run: |
+          gcc --version | head -1
+          cmake --version | head -1
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DBUILD_ALL=ON
+
+      - name: Build
+        run: |
+          # -k 0: keep going so one failure does not truncate the inventory
+          ninja -C build -k 0 2>&1 | tee build.log
+
+      - name: Report warnings
+        if: ${{ always() }}
+        run: |
+          # the checkout is owned by a different uid than the container root
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git ls-files > tracked.txt
+          python3 ci/warning_report.py build.log \
+            --root "$GITHUB_WORKSPACE" \
+            --build "$GITHUB_WORKSPACE/build" \
+            --tracked tracked.txt
+
+      - name: Upload build log and inventory
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: warnings-fedora-${{ matrix.fedora }}
+          path: |
+            build.log
+            warnings.tsv
